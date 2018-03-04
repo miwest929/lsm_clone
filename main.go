@@ -1,13 +1,11 @@
 package main
 
 import (
-	"fmt"
+	//	"fmt"
 	"sstable-lsm-demo/log_structured_file"
 )
 
 func main() {
-	fmt.Println("Demo")
-
-	lsf := log_structured_file.NewLogStructuredFile()
+	lsf := log_structured_file.NewLogStructuredFile("data/segment0")
 	lsf.AppendKeyValue("message", "Ignore")
 }
