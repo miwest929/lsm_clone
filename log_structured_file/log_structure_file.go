@@ -2,9 +2,10 @@ package log_structured_file
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
-	"strings"
+	"sstable-lsm-demo/segment"
 )
 
 const (
@@ -14,106 +15,86 @@ const (
 //TODO: This is not thread-safe yet!!!!
 //TODO: For simplicity sake this is not Unicode compliant
 type LogStructuredFile struct {
-	hashIndex map[string]int64
-	fd        *os.File
+	segments   []*segment.Segment
+	dbname     string
+	metadataFd *os.File
 }
 
 // TODO: dbname is the database name which will be manifested as its own directory under the root data/ dir
-func NewLogStructuredFile(filename string) *LogStructuredFile {
-	var fd *os.File
-	var err error
+func NewLogStructuredFile(dbname string) *LogStructuredFile {
+	dbDir := databaseRootDir(dbname)
+	segments := make([]*segment.Segment, 0)
+	var metadataFd *os.File
 
-	if _, err = os.Stat(filename); os.IsNotExist(err) {
-		fd, err = os.Create(filename)
+	if _, err := os.Stat(dbDir); err != nil {
+		os.Mkdir(dbDir, 0666)
+		metadataFd = createMetadataFile(dbDir)
+
+		newSegmentPath := fmt.Sprintf("%s/segment0", dbDir)
+		segments = append(segments, segment.NewSegment(newSegmentPath))
 	} else {
-		fd, err = os.OpenFile(filename, os.O_APPEND|os.O_RDWR, os.ModeAppend)
+		metadataPath := fmt.Sprintf("%s/metadata", dbDir)
+		metadataFd, _ = os.OpenFile(metadataPath, os.O_APPEND|os.O_RDWR, os.ModeAppend)
+		segments = getSegmentsFromMetadata(metadataFd, dbDir)
 	}
 
-	if err != nil { //error handler
-		fmt.Printf("Error when opening file %s. ErrorMsg: %s", filename, err.Error())
-		return nil
+	return &LogStructuredFile{
+		segments:   segments,
+		dbname:     dbname,
+		metadataFd: metadataFd,
+	}
+}
+
+func (lsf *LogStructuredFile) getCurrentSegment() *segment.Segment {
+	return lsf.segments[len(lsf.segments)-1]
+}
+
+func (lsf *LogStructuredFile) ReadKey(key string) (string, error) {
+	segment := lsf.getCurrentSegment()
+	if segment.Exists(key) {
+		return segment.ReadKey(key), nil
 	}
 
-	lsf := LogStructuredFile{
-		hashIndex: map[string]int64{},
-		fd:        fd,
-	}
-	lsf.loadHashMapForSegment()
-
-	return &lsf
+	return "", errors.New("Key doesn't exist.")
 }
 
 func (lsf *LogStructuredFile) AppendKeyValue(key string, value string) {
-	keyValueStr := fmt.Sprintf("%s,%s\n", key, value)
-	keyValueBytes := []byte(keyValueStr)
+	segment := lsf.getCurrentSegment()
+	segment.AppendKeyValue(key, value)
+}
 
-	currLen := lsf.nextOffsetValue()
-
-	// Error occured while retrieving the next offset value
-	if currLen == -1 {
-		return
-	}
-
-	writer := bufio.NewWriter(lsf.fd)
-	_, err := writer.Write(keyValueBytes)
+func createMetadataFile(dbRoot string) *os.File {
+	metadataPath := fmt.Sprintf("%s/metadata", dbRoot)
+	fd, err := os.Create(metadataPath)
 
 	if err != nil {
 		fmt.Println(err)
-		return
+		return nil
 	}
 
-	err = writer.Flush()
-
-	if err != nil {
-		fmt.Println(err)
-		return
-	}
-
-	lsf.updateHashMap(key, currLen)
+	return fd
 }
 
-func (lsf *LogStructuredFile) ReadKey(key string) (string, string) {
-	offset := lsf.hashIndex[key]
+/*
+Layout of metadata file
+-------------------------------
+segment<n>             | <n> is the segment id. The lower it is the older that segment is.
+.....
+segment<current>       | <current> is the id of the currently active segment. All writes are appended to this segment
 
-	_, err := lsf.fd.Seek(offset, 0)
-	if err != nil {
-		fmt.Printf("Failed to seek to specified offset in data file. %s", err.Error())
-		return "", ""
-	}
-
-	reader := bufio.NewReader(lsf.fd)
-	keyValue, _, err := reader.ReadLine()
-
-	parts := strings.Split(string(keyValue), ",")
-	return parts[0], parts[1]
-}
-
-func (lsf *LogStructuredFile) updateHashMap(key string, offset int64) {
-	lsf.hashIndex[key] = offset
-}
-
-// Only called upon initialization of LogStructuredFile object
-func (lsf *LogStructuredFile) loadHashMapForSegment() {
-	var offset int64 = 0
-	scanner := bufio.NewScanner(lsf.fd)
+Returns the list of segments in this LSF. The first one is the oldest segment. The last one is the current, active one.
+*/
+func getSegmentsFromMetadata(fd *os.File, rootDir string) []*segment.Segment {
+	segments := make([]*segment.Segment, 0)
+	scanner := bufio.NewScanner(fd)
 	for scanner.Scan() {
-		rawBytes := scanner.Bytes()
-		keyValue := string(rawBytes)
-
-		parts := strings.Split(string(keyValue), ",")
-		lsf.updateHashMap(parts[0], offset)
-
-		offset += int64(len(rawBytes)) + 1
+		segmentFile := fmt.Sprintf("%s/%s", rootDir, scanner.Text())
+		segments = append(segments, segment.NewSegment(segmentFile))
 	}
+
+	return segments
 }
 
-func (lsf *LogStructuredFile) nextOffsetValue() int64 {
-	info, err := lsf.fd.Stat()
-
-	if err != nil {
-		fmt.Println(err)
-		return -1
-	}
-
-	return info.Size()
+func databaseRootDir(dbname string) string {
+	return fmt.Sprintf("%s/%s", "data", dbname)
 }
