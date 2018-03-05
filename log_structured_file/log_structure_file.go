@@ -7,7 +7,12 @@ import (
 	"strings"
 )
 
+const (
+	MAX_SEGMENT_SIZE_BYTES = 1024 // 1K
+)
+
 //TODO: This is not thread-safe yet!!!!
+//TODO: For simplicity sake this is not Unicode compliant
 type LogStructuredFile struct {
 	hashIndex map[string]int64
 	fd        *os.File
@@ -19,7 +24,7 @@ func NewLogStructuredFile(filename string) *LogStructuredFile {
 	var err error
 
 	if _, err = os.Stat(filename); os.IsNotExist(err) {
-		fd, err = os.Create(filename) //, os.O_APPEND|os.O_RDWR)
+		fd, err = os.Create(filename)
 	} else {
 		fd, err = os.OpenFile(filename, os.O_APPEND|os.O_RDWR, os.ModeAppend)
 	}
@@ -29,10 +34,13 @@ func NewLogStructuredFile(filename string) *LogStructuredFile {
 		return nil
 	}
 
-	return &LogStructuredFile{
+	lsf := LogStructuredFile{
 		hashIndex: map[string]int64{},
 		fd:        fd,
 	}
+	lsf.loadHashMapForSegment()
+
+	return &lsf
 }
 
 func (lsf *LogStructuredFile) AppendKeyValue(key string, value string) {
@@ -82,6 +90,21 @@ func (lsf *LogStructuredFile) ReadKey(key string) (string, string) {
 
 func (lsf *LogStructuredFile) updateHashMap(key string, offset int64) {
 	lsf.hashIndex[key] = offset
+}
+
+// Only called upon initialization of LogStructuredFile object
+func (lsf *LogStructuredFile) loadHashMapForSegment() {
+	var offset int64 = 0
+	scanner := bufio.NewScanner(lsf.fd)
+	for scanner.Scan() {
+		rawBytes := scanner.Bytes()
+		keyValue := string(rawBytes)
+
+		parts := strings.Split(string(keyValue), ",")
+		lsf.updateHashMap(parts[0], offset)
+
+		offset += int64(len(rawBytes)) + 1
+	}
 }
 
 func (lsf *LogStructuredFile) nextOffsetValue() int64 {
