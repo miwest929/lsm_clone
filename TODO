@@ -1,0 +1,6 @@
+- Make Segment and LogStructuredFile structs thread-safe
+- Detect when current segment is too large. Create new segment when this happens
+- Implement SSTable and Memtable
+- Extract Metadata file processing into its own struct.
+- Handle case where metadata file is corrupted
+- Create CLI. For easier interaction

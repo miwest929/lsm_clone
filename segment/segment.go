@@ -2,16 +2,21 @@ package segment
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
 //TODO: This is not thread-safe yet!!!!
-//TODO: For simplicity sake this is not Unicode compliant
 type Segment struct {
 	hashIndex map[string]int64
 	fd        *os.File
+	Name      string
+	Id        int64
 }
 
 func NewSegment(filename string) *Segment {
@@ -29,13 +34,37 @@ func NewSegment(filename string) *Segment {
 		return nil
 	}
 
+	name := filepath.Base(filename)
+	id, err := extractSegmentIdFromName(name)
+
+	if err != nil {
+		fmt.Println(err)
+		return nil
+	}
+
 	segment := Segment{
 		hashIndex: map[string]int64{},
 		fd:        fd,
+		Name:      name,
+		Id:        id,
 	}
 	segment.loadHashMapForSegment()
 
 	return &segment
+}
+
+func extractSegmentIdFromName(name string) (int64, error) {
+	re := regexp.MustCompile("segment([0-9]+)")
+
+	match := re.FindStringSubmatch(name)
+	if len(match) < 2 {
+		return -1, errors.New(fmt.Sprintf("Failed to extract the segment id from filename '%s'", name))
+	}
+
+	//TODO: Bad. Don't ignore the error
+	id, _ := strconv.ParseInt(match[1], 10, 64)
+
+	return id, nil
 }
 
 func (segment *Segment) AppendKeyValue(key string, value string) {
@@ -93,6 +122,11 @@ func (segment *Segment) updateHashMap(key string, offset int64) {
 
 // Only called upon initialization of Segment object
 func (segment *Segment) loadHashMapForSegment() {
+	// Check if the IndexHash has already been initialized
+	if len(segment.hashIndex) > 0 {
+		return
+	}
+
 	var offset int64 = 0
 	scanner := bufio.NewScanner(segment.fd)
 	for scanner.Scan() {
